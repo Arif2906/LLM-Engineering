@@ -1,0 +1,86 @@
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+import gradio as gr
+import json
+import requests
+
+from openai.types.responses import FunctionShellTool
+
+load_dotenv()
+router_api_key=os.getenv("OpenRouter")
+router_client= OpenAI(api_key=router_api_key, base_url='https://openrouter.ai/api/v1')
+
+def get_weather(city:str):
+    geo_data=requests.get(f'https://geocoding-api.open-meteo.com/v1/search?name={city}')
+    geo_object=geo_data.json()
+    lat = geo_object["results"][0]["latitude"]
+    lon = geo_object["results"][0]["longitude"]
+
+    weather_url = "https://api.open-meteo.com/v1/forecast"
+    weather_res = requests.get(weather_url, params={
+        "latitude": lat,
+        "longitude": lon,
+        "current_weather": True
+    })
+
+    weather_data = weather_res.json()
+
+    current = weather_data.get("current_weather", {})
+    return f'Current weather at {city} is {current.get("temperature")}'
+
+tools= [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get current weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "City Name"
+                    }
+                },
+                "required": ["city"]
+            }
+        }
+    }]
+system_prompt="""
+you are weather assistant ai, please answer question in short manner and crisp do not give long answer and and if you don't know
+the answer say so
+"""
+def chat_assistant(message, chat_history):
+    history= [{"role": "user", "content" : h["content"]} for h in chat_history]
+    messages = [{"role":"system", "content": system_prompt}] + history+ [{'role': 'user' , 'content' : message }]
+    response= router_client.chat.completions.create(model='nvidia/nemotron-3-super-120b-a12b:free', messages=
+    messages, tools=tools,
+    tool_choice="auto")
+    
+    while response.choices[0].message.tool_calls:
+        assitant_message= response.choices[0].message
+        tool_responses=handle_tool_call(assitant_message)
+        messages.append(assitant_message)
+        messages.extend(tool_responses)
+        print(messages)
+        response = router_client.chat.completions.create(model='nvidia/nemotron-3-super-120b-a12b:free', messages=messages, tools=tools,
+            tool_choice="auto")
+    return response.choices[0].message.content
+        
+
+def handle_tool_call(message):
+    responses=[]
+    for tool_call in message.tool_calls:
+        if tool_call.function.name=="get_weather":
+            args=json.loads(tool_call.function.arguments)
+            weather_function_output = get_weather(**args)
+            responses.append({
+                "role": "tool",
+                "content": weather_function_output,
+                "tool_call_id": tool_call.id
+            })
+    return responses
+
+gr.ChatInterface(fn=chat_assistant).launch()
+    
+    
